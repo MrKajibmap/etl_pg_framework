@@ -1,6 +1,7 @@
 import datetime
 import os
 
+from config import HOST_NAME, DB_NAME, USER_NAME, PASSWORD
 from pyarrow import binary
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit
@@ -14,9 +15,9 @@ import psycopg2
 def extract_pg(jdbc_connection: str, tableName: str, filterText: str, versionId: int, sourceSystemCd: str):
     if len(sourceSystemCd) == 0:
         return
-    outDFname = spark.read \
+    out_df_name = spark.read \
         .format("jdbc") \
-        .option("url", "jdbc:postgresql:"+jdbc_connection) \
+        .option("url", "jdbc:postgresql:" + jdbc_connection) \
         .option("dbtable", tableName) \
         .option("user", "admin") \
         .option("password", "admin") \
@@ -26,27 +27,29 @@ def extract_pg(jdbc_connection: str, tableName: str, filterText: str, versionId:
         .withColumn('etl_available_dttm', lit(datetime.datetime.now())) \
         .withColumn('source_system_cd', lit(sourceSystemCd))
 
-    # outDFname.insert
+    # out_df_name.insert
     print(len(filterText))
     if len(filterText) > 0:
-        outDFname.filter(filterText)
-    print(type(outDFname))
-    print('Count rows of final DF:', outDFname.count())
-    outDFname.printSchema()
-    return outDFname
+        out_df_name.filter(filterText)
+    print(type(out_df_name))
+    print('Count rows of final DF:', out_df_name.count())
+    out_df_name.printSchema()
+    return out_df_name
 
-def archive_pg(jdbc_in_connect: str, jdbc_out_connect: str, input_table_name: str, output_table_name:str ):
+
+def archive_pg(jdbc_in_connect: str, jdbc_out_connect: str, input_table_name: str, output_table_name: str):
     conn = psycopg2.connect(
-    host="127.0.0.1",
-    database="db",
-    user="admin",
-    password="admin")
+        host=HOST_NAME,
+        database=DB_NAME,
+        user=USER_NAME,
+        password=PASSWORD)
     cur = conn.cursor()
-    cur.execute('select count(*) from first_table')
-    a=cur.fetchone()
+    cur.execute('select count(*) from ' + input_table_name)
+    a = cur.fetchone()
     print('type a is: ', type(a[0]))
     print('count of input table: ', a[0])
     conn.close()
+
 
 if __name__ == '__main__':
     spark = SparkSession.builder \
@@ -134,7 +137,8 @@ if __name__ == '__main__':
     print(type(df))
 
     print(df.head(20))
-    outDFname = extract_pg(jdbc_connection='//localhost:5432/db', tableName='first_table', filterText='fld IS NOT NULL and mark IS NOT NULL', versionId=150, sourceSystemCd='FCC')
+    outDFname = extract_pg(jdbc_connection='//localhost:5432/db', tableName='first_table',
+                           filterText='fld IS NOT NULL and mark IS NOT NULL', versionId=150, sourceSystemCd='FCC')
     outDFname.printSchema()
     print(outDFname.head(10))
     archive_pg(input_table_name='first_table', jdbc_out_connect='', jdbc_in_connect='', output_table_name='')

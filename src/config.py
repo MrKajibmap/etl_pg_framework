@@ -1,4 +1,5 @@
 HOST_NAME = '127.0.0.1'
+HOST_ENGINE = 'localhost:5432/db'
 DB_NAME = 'db'
 USER_NAME = 'admin'
 PASSWORD = 'admin'

@@ -1,9 +1,10 @@
 import datetime
 import os
 
+from numpy.core.defchararray import upper
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from sqlalchemy import create_engine
-from config import HOST_NAME, DB_NAME, USER_NAME, PASSWORD
+from config import HOST_NAME, DB_NAME, USER_NAME, PASSWORD, HOST_ENGINE
 from pyarrow import binary
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, lit
@@ -12,13 +13,15 @@ import pandas as pd
 import pyspark.pandas as ps
 import pyarrow as pa
 import psycopg2
-from psycopg2 import Error
+from psycopg2 import Error, OperationalError
 
 
-def extract_pg(jdbcConnection: str, inputTableName: str, outputTableName:str, filterText: str, versionId: int, sourceSystemCd: str):
-    print('Extract data (' + inputTableName + ') from PG has been started.')
+def extract_pg(jdbcConnection: str, inputTableName: str, outputTableName: str, filterText: str, versionId: int,
+               sourceSystemCd: str):
+    print('Extracting data (' + inputTableName + ') from PG has been started.')
     if len(sourceSystemCd) == 0:
-        return
+        print('Invalid value for parameter SourceSystemCD.')
+        exit()
     outDf = spark.read \
         .format("jdbc") \
         .option("url", "jdbc:postgresql:" + jdbcConnection) \
@@ -36,22 +39,24 @@ def extract_pg(jdbcConnection: str, inputTableName: str, outputTableName:str, fi
         print('Filtering the input data-set...')
         outDf.filter(filterText)
 
-    # TODO -> to config
-    engine = create_engine('postgresql://admin:admin@localhost:5432/db')
-    print('Loading data-set to PG "' + outputTableName + '"...' )
+    engine = create_engine('postgresql://' + USER_NAME + ':' + PASSWORD + '@' + HOST_ENGINE)
+    print('Loading data-set to PG "' + outputTableName + '"...')
     outDf.toPandas().to_sql(outputTableName, engine, if_exists='replace', index=False)
     return outDf
 
 
 def pg_connect_to_db(host: str, db: str, user: str, password: str):
+    print('Trying to connect to PG...')
     try:
         db_connection = psycopg2.connect(
             host=HOST_NAME,
             database=DB_NAME,
             user=USER_NAME,
             password=PASSWORD)
-    except (Exception, Error) as error:
-        print('Invalid db connect options.', '\n', error)
+    except OperationalError as error:
+        print('Invalid db connect options were passed.', '\n', error)
+        print('Type of error:', type(error))
+        exit(print('End of processing.'))
     else:
         cursor = db_connection.cursor()
         cursor.execute('select version()')
@@ -91,7 +96,7 @@ def archive_pg(jdbcInConnect: str, jdbcOutConnect: str, inputTableName: str, out
         generalString = generalString + coma + i[0]
 
     try:
-        print('Loading "' + inputTableName + '" into "'+outputTableName + '"...')
+        print('Loading "' + inputTableName + '" into "' + outputTableName + '"...')
         cursor.execute('insert into ' + outputTableName + '(' + generalString + ') select ' + generalString
                        + ' from ' + inputTableName)
     except (Exception, Error) as error:
@@ -102,13 +107,37 @@ def archive_pg(jdbcInConnect: str, jdbcOutConnect: str, inputTableName: str, out
         print('Archive step completed.')
 
 
+def generate_bk(inputTableName: str,
+                outputTableName: str,
+                businessKeyCd: str,
+                optionalFlg: bool
+                ):
+    conn = pg_connect_to_db(host=HOST_NAME, db=DB_NAME, user='etl_sys', password='etl_sys')
+    cursor = conn.cursor()
+    pg_check_exist_table(table_name='etl_sys.etl_bk', db_connection=conn)
+    pg_check_exist_table(table_name='etl_sys.etl_bk_type', db_connection=conn)
+    cursor.execute('SELECT bk_cd, bk_type_cd, bk_field_nm, bk_format_txt, bk_column_list_txt FROM etl_sys.etl_bk '
+                   'where upper(bk_cd)=\'%s\'' % upper(businessKeyCd))
+    columns_list = ['bk_cd', 'bk_type_cd', 'bk_field_nm', 'bk_format_txt', 'bk_column_list_txt']
+    res = cursor.fetchall()
+    # print('>>>> original view: ', res, '\nlength = ', len(list(res[0])))
+    # if execute-response is empty:
+    if len(res) == 0:
+        print('Invalid businessKeyCd. Check out input parameters. Current invalid value == \'', businessKeyCd, '\'')
+        exit(print('End of processing.'))
+    if len(list(res[0])) == len(columns_list):
+        column_value_list = {columns_list[i]: list(res[0])[i] for i in range(len(columns_list))}
+    cursor.close()
+    conn.close()
+
+
 if __name__ == '__main__':
-    spark = SparkSession.builder \
-        .master("local[*]") \
-        .appName('PySpark_Tutorial') \
-        .config("spark.jars", "/Users/nb/Documents/postgresql-42.4.0.jar") \
-        .getOrCreate()
-    os.environ["PYARROW_IGNORE_TIMEZONE"] = "1"
+    # spark = SparkSession.builder \
+    #     .master("local[*]") \
+    #     .appName('PySpark_Tutorial') \
+    #     .config("spark.jars", "/Users/nb/Documents/postgresql-42.4.0.jar") \
+    #     .getOrCreate()
+    # os.environ["PYARROW_IGNORE_TIMEZONE"] = "1"
     # Create DataFrame in PySpark Shell
     # data = [("Java", "20000"), ("Python", "100000"), ("Scala", "3000")]
     # df = spark.createDataFrame(data)
@@ -174,12 +203,13 @@ if __name__ == '__main__':
     # print(type(df))
     # sdf1 = spark.read.jdbc()
 
-    extract_pg(jdbcConnection='//localhost:5432/db', inputTableName='first_table',
-                           outputTableName = 'first_table_full',
-                           filterText='fld IS NOT NULL and mark IS NOT NULL', versionId=150, sourceSystemCd='FCC')
+    # extract_pg(jdbcConnection='//localhost:5432/db', inputTableName='first_table',
+    #            outputTableName='first_table_full',
+    #            filterText='fld IS NOT NULL and mark IS NOT NULL', versionId=150, sourceSystemCd='FCC')
 
     archive_pg(inputTableName='first_table_full',
                outputTableName='first_table_arch',
                jdbcOutConnect='',
                jdbcInConnect='',
                )
+    generate_bk(inputTableName='', outputTableName='', businessKeyCd='FIN_INSTR_ASSOC_KPS_FSP_OPT', optionalFlg='')

@@ -1,5 +1,6 @@
 import datetime
 import os
+import re
 
 from numpy.core.defchararray import upper
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
@@ -127,6 +128,39 @@ def generate_bk(inputTableName: str,
         exit(print('End of processing.'))
     if len(list(res[0])) == len(columns_list):
         column_value_list = {columns_list[i]: list(res[0])[i] for i in range(len(columns_list))}
+    else:
+        print('Invalid data for business key (%s) has defined in etl_sys.etl_bk.' % businessKeyCd)
+    # parse bk_format_txt
+    print('>>>> ', str(column_value_list['bk_format_txt']), ' ', type(column_value_list['bk_format_txt']))
+    print('len: ', len(column_value_list['bk_format_txt']))
+    print(type(str(column_value_list['bk_format_txt']).split(sep='_')))
+    format_component_list = {}
+    # razmetka spiska na konstanta (0) and input columns values (1)
+    for i in range(len(str(column_value_list['bk_format_txt']).split(sep='_'))):
+        flg = 0
+        print(str(column_value_list['bk_format_txt']).split(sep='_')[i])
+        # format_component_list[str(column_value_list['bk_format_txt']).split(sep='_')[i]] = 0
+        if str(column_value_list['bk_format_txt']).split(sep='_')[i].find('{') != -1 and \
+                str(column_value_list['bk_format_txt']).split(sep='_')[i].find('}') != -1:
+            format_component_list[str(column_value_list['bk_format_txt']).split(sep='_')[i]] = 1
+            # comparing regexp with column value
+            # firstly, validate regexp formula
+            formula = str(column_value_list['bk_format_txt']).split(sep='_')[i]
+            if len(str(re.findall(r'{[C|Z|N|T|D]\d+}', formula))) > 0:
+                ctype = str(re.findall(r'C|Z|N|T|D', formula)[0])
+                clength = str(re.findall(r'\d+', str(formula)[2:])[0])
+            else:
+                exit(print('ERROR: Invalid bk_format_txt: \'', str(column_value_list['bk_format_txt']), '\'.'))
+    # transformation to form {'{C3}': 'FINANCIAL_INSTR_ASSOC_TYPE_CD', '{N26}': 'BLOCKNUMBER'}
+    count = 0
+    for i in format_component_list:
+        print(i)
+        print(column_value_list['bk_column_list_txt'])
+        print(str(column_value_list['bk_column_list_txt']).split(sep=' ')[count])
+        format_component_list[i] = str(column_value_list['bk_column_list_txt']).split(sep=' ')[count]
+        count = count + 1
+
+    print(format_component_list)
     cursor.close()
     conn.close()
 

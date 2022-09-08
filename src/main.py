@@ -137,6 +137,7 @@ def generate_bk(inputTableName: str,
     format_component_list = {}
     # razmetka spiska na konstanta (0) and input columns values (1)
     for i in range(len(str(column_value_list['bk_format_txt']).split(sep='_'))):
+        print('INFO: main cycle: i = ', i)
         flg = 0
         print(str(column_value_list['bk_format_txt']).split(sep='_')[i])
         # format_component_list[str(column_value_list['bk_format_txt']).split(sep='_')[i]] = 0
@@ -150,7 +151,8 @@ def generate_bk(inputTableName: str,
                 ctype = str(re.findall(r'C|Z|N|T|D', formula)[0])
                 clength = str(re.findall(r'\d+', str(formula)[2:])[0])
             else:
-                exit(print('ERROR: Invalid bk_format_txt: \'', str(column_value_list['bk_format_txt']), '\'.'))
+                exit(print('TechError: [errinfo] Invalid bk_format_txt: \'', str(column_value_list['bk_format_txt']),
+                           '\'.'))
     # transformation to form {'{C3}': 'FINANCIAL_INSTR_ASSOC_TYPE_CD', '{N26}': 'BLOCKNUMBER'}
     count = 0
     for i in format_component_list:
@@ -159,8 +161,61 @@ def generate_bk(inputTableName: str,
         print(str(column_value_list['bk_column_list_txt']).split(sep=' ')[count])
         format_component_list[i] = str(column_value_list['bk_column_list_txt']).split(sep=' ')[count]
         count = count + 1
+    print(inputTableName.split(sep='.')[0], '+', inputTableName.split(sep='.')[1])
+    print('INFO: format_component_list: ', format_component_list)
+    bk_elements = {}
+    for i in format_component_list:
+        print('>> 1 >> : %s' % i)
+        print('>> 2 >>: %s' % format_component_list[i])
+        print('INFO: index of I : ', list(format_component_list.keys()).index(i))
+        cursor.execute(''' select upper(data_type) , coalesce(character_maximum_length, 0)
+                        from information_schema.columns
+                        where upper(table_schema) = \'%s\'
+                        and upper(table_name) = \'%s\'
+                        and upper(column_name) = \'%s\' ''' % (
+            upper(str(inputTableName.split(sep='.')[0])), upper(str(inputTableName.split(sep='.')[1])),
+            upper(str(format_component_list[i]))))
+        sql_response = cursor.fetchall()
+        if len(sql_response) == 0:
+            exit(print('TechError: [errinfo] Invalid sql response has been received.'))
+        print('INFO: list(list(sql_response)[0])[0]: ', list(list(sql_response)[0])[0])
+        print('INFO: list(list(sql_response)[0])[1]: ', list(list(sql_response)[0])[1])
+        print('INFO: len(str(i)): ', len(str(i)))
+        if str(i)[1] == 'C':
+            if str(list(sql_response)[0]).find('CHAR'):
+                print('INFO: pg_type: ', str(list(sql_response)[0]), ' is CHAR')
+                el_len = str(re.findall(r'\d+', str(i)[2:])[0])
+                # print('INFO: el len :', el_len)
+                # print('INFO: str(list): ',
+                #       str(list(sql_response)[0]).split(sep=',')[1].replace('(', '').replace(')', ''))
+                # присваиваем элементу Дамми значение (повтор литеры F на всю длину элемента из формулы)
+                # if int(el_len) != int(str(list(sql_response)[0]).split(sep=',')[1].replace('(', '').replace(')', '')):
+                if int(el_len) != int(list(list(sql_response)[0])[1]):
+                    print(
+                        'ETLWarning: [warninginfo] Invalid length defined in ETL_BK for column \' %s \'' % upper(
+                            str(format_component_list[i])), '. Dummy will be defined.')
+                    bk_elements[list(format_component_list.keys()).index(i)] = 'F' * int(el_len)
+        if str(i)[1] == 'N':
+            if str(list(list(sql_response)[0])[0]) in ['SMALLINT', 'INTEGER', 'BIGINT', 'DECIMAL', 'NUMERIC', 'REAL',
+                                               'SMALLSERIAL', 'SERIAL', 'BIGSERIAL']:
+                print('INFO: pg_type: ', list(list(sql_response)[0])[0], ' is NUM.')
+                el_len = str(re.findall(r'\d+', str(i)[2:])[0])
+                if int(list(list(sql_response)[0])[1]) != 0 and int(el_len) != int(list(list(sql_response)[0])[1]):
+                    print(
+                        'ETLWarning: [warninginfo] Invalid length defined in ETL_BK for column \' %s \'' % upper(
+                            str(format_component_list[i])), '. Dummy will be defined.')
+                    bk_elements[list(format_component_list.keys()).index(i)] = 'F' * int(el_len)
+        if str(i)[1] == 'D':
+            if str(list(list(sql_response)[0])[0]) in ['DATE', 'TIMESTAMP']:
+                print('INFO: pg_type: ', list(list(sql_response)[0])[0], ' is Date/Timestamp.')
 
-    print(format_component_list)
+        if str(i)[1] == 'T':
+            if str(list(list(sql_response)[0])[0]) in ['TIME']:
+                print('INFO: pg_type: ', list(list(sql_response)[0])[0], ' is Time.')
+
+        # присваиваем элементу имя колонки входной таблицы
+        bk_elements[list(format_component_list.keys()).index(i)] = format_component_list[i]
+
     cursor.close()
     conn.close()
 
@@ -246,4 +301,5 @@ if __name__ == '__main__':
                jdbcOutConnect='',
                jdbcInConnect='',
                )
-    generate_bk(inputTableName='', outputTableName='', businessKeyCd='FIN_INSTR_ASSOC_KPS_FSP_OPT', optionalFlg='')
+    generate_bk(inputTableName='fcc.fcc_test_table', outputTableName='', businessKeyCd='FIN_INSTR_ASSOC_KPS_FSP_OPT',
+                optionalFlg='')

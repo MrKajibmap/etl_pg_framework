@@ -154,35 +154,43 @@ begin
 		RAISE EXCEPTION 'Указанный BK (%) не найден в таблице ETL_SYS.ETL_BK.', fpBkCd;
 	END IF;
 
-	return substr(lvBkFormula, 10) || '||'  || ' case when '
-		|| substr(bk_dummy_postfix, 5) || ' then ''_'' || nextval(''etl_sys.tech_dummy_seq'')::text else '''' end as ' || lvBkFieldNm;
+	return '( ' || substr(lvBkFormula, 10) || '||'  || ' case when '
+		|| substr(bk_dummy_postfix, 5) || ' then ''_'' || nextval(''etl_sys.tech_dummy_seq'')::text else '''' end) as ' || lvBkFieldNm;
 
 
 end;
 
 $$ language plpgsql;
 
-SELECT FORMAT('drop table if exists %s'
-					, 'FCC.TEST_TABLE_BK');
 
-	SELECT format('create table %s as
+
+
+drop function if exists f_bk;
+create function f_bk() returns void as $$
+
+begin
+
+execute FORMAT('drop table if exists %s'
+					, 'FCC.TEST_TABLE_BK1');
+
+	execute format('create table %s as
 				   		select *
-				   			, %s as BK
+				   			, %s
 				   		from %s as input_t'
-				  		, 'FCC.TEST_TABLE_BK'
-						,  f_get_bk_expression('FIN_INSTR_ASSOC_KPS_FSP_OPT'
-						   							, 'FCC.FCC_TEST_TABLE')
+				  		, 'FCC.TEST_TABLE_BK1'
+						,  f_get_bk_expression('FIN_INSTR_ASSOC_KPS_FSP_OPT', 'FCC.FCC_TEST_TABLE')
 				  		, 'FCC.FCC_TEST_TABLE');
+end;
+
+$$ language plpgsql;
 
 
+select f_bk();
 
 select f_get_bk_expression('FIN_INSTR_ASSOC_KPS_FSP_OPT'
 						   , 'FCC.FCC_TEST_TABLE'
 						  ) ;
 
-
-select *
-from fcc.test_table_bk
 
 
 

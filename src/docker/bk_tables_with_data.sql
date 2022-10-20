@@ -34,3 +34,16 @@ COMMENT ON COLUMN ETL_SYS.ETL_BK_TYPE.DUMMY_RX_TXT IS 'Маска дамми б�
 
 INSERT INTO ETL_SYS.ETL_BK (BK_CD, BK_TYPE_CD, BK_FIELD_NM, BK_FORMAT_TXT, BK_COLUMN_LIST_TXT) VALUES('FIN_INSTR_ASSOC_KPS_FSP_OPT', 'FIN_INSTR_ASSOC_KPS_FSP_OPT', 'FIN_INSTRUMENT_ASSOC_ID', 'KPS_{C3}_{N26}', 'FINANCIAL_INSTR_ASSOC_TYPE_CD BLOCKNUMBER');
 INSERT INTO ETL_SYS.ETL_BK_TYPE (BK_TYPE_CD, BK_LENGTH, BK_RX_TXT, DUMMY_RX_TXT) VALUES('FIN_INSTR_ASSOC_KPS_FSP_OPT', 54, '\w{3,3}_\w{3,3}_\w{26,26}', '(\w{3,3}_\w{3,3}_\w{26,26})_(\d+)');
+
+
+create table etl_ia.test_table_bk_rk (FIN_INSTR_ASSOC_ID character varying (54), FIN_INSTR_ASSOC_RK int );
+
+
+CREATE TABLE IF NOT EXISTS etl_ia.fcc_test_dummy
+(
+    fin_instrument_assoc_rk numeric NOT NULL,
+    valid_from_dttm timestamp NOT NULL,
+	valid_to_dttm timestamp NOT NULL,
+	processed_dttm timestamp NOT NULL,
+	dummy_type_cd character varying(3) NOT NULL
+);

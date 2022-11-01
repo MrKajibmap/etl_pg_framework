@@ -1,8 +1,11 @@
-DROP procedure if exists etl_ia.load_inc(tabname varchar(32));
+DROP procedure if exists etl_ia.load_inc(fpInputTableNm varchar(32)
+								 ,fpTargetTableNm varchar(50)
+								 ,fpPartialUpdateFlg varchar(10))
+								 ;
 
 CREATE procedure etl_ia.load_inc(fpInputTableNm varchar(32)
 								 ,fpTargetTableNm varchar(50)
-								 , tabname varchar(32))
+								,fpPartialUpdateFlg varchar(10))
 --	RETURNS integer
     LANGUAGE 'plpgsql'
 --     COST 100
@@ -23,6 +26,7 @@ declare
 	lmvPkListFULL varchar(800);
 	lmvColumnsList varchar(1500);
 	lmvFullColumnsList varchar(1500);
+	lmvPkListForCloseDelta  varchar(800);
 	lmvCurrentTimestamp timestamp without time zone DEFAULT current_timestamp;
 	lmvFutureTimestamp timestamp without time zone DEFAULT '5999-01-01 00:00:00';
 BEGIN
@@ -41,7 +45,7 @@ BEGIN
 
 	/* вычисляем констрейнты для таблицы */
 	drop table if exists res_constraints;
-	EXECUTE 'create temp table if not exists res_constraints as
+	EXECUTE format ('create temp table if not exists res_constraints as
 						SELECT c.column_name
 								, c.data_type
 								, ccu.constraint_name
@@ -53,15 +57,17 @@ BEGIN
 						left JOIN inFORMATion_schema.table_constraints as tc
 							ON c.table_name = tc.table_name
 							AND ccu.constraint_name = tc.constraint_name
-						WHERE upper(table_schema) = split_part(upper(fpInputTableNm), '.', 1)
-				and upper(table_name) = split_part(upper(fpInputTableNm), '.', 2)';
+						WHERE upper(c.table_schema) =%L
+				and upper(c.table_name) = %L'
+				,split_part(upper(fpInputTableNm), '.', 1)
+				,split_part(upper(fpInputTableNm), '.', 2));
 
 	/* Записываем констрейнты в отдельные переменные */
 	SELECT array_agg(DISTINCT column_name)
 	INTO lmvPkList
 	FROM res_constraints
 	WHERE constraint_type = 'PRIMARY KEY'
-		AND lower(column_name) NOT IN ('valid_from_dttm', 'valid_to_dttm', 'processed_dttm');
+		AND lower(column_name) NOT IN ('valid_from_dttm', 'valid_to_dttm', 'processed_dttm', 'source_system_cd');
 
 	SELECT array_agg(DISTINCT column_name)
 	INTO lmvPkListFULL
@@ -72,55 +78,65 @@ BEGIN
 	INTO lmvColumnsList
 	FROM res_constraints
 	WHERE (constraint_type <> 'PRIMARY KEY' OR constraint_type IS NULL)
-		AND column_name NOT IN ('valid_from_dttm', 'valid_to_dttm', 'processed_dttm');
+		AND column_name NOT IN ('valid_from_dttm', 'valid_to_dttm', 'processed_dttm', 'source_system_cd');
 
 	SELECT  array_agg(DISTINCT column_name)
 	INTO lmvFullColumnsList
-	FROM res_constraints;
+	FROM res_constraints
+	WHERE lower(column_name) NOT IN ('processed_dttm');
 
+	SELECT array_agg(DISTINCT column_name)
+	INTO lmvPkListForCloseDelta
+	FROM res_constraints
+	WHERE constraint_type = 'PRIMARY KEY'
+		or lower(column_name) IN ('valid_from_dttm', 'valid_to_dttm',  'source_system_cd');
+
+	raise notice 'lmvPkList = %', lmvPkList;
+	raise notice 'lmvPkListFULL = %', lmvPkListFULL;
+	raise notice 'lmvColumnsList = %', lmvColumnsList;
+	raise notice 'lmvFullColumnsList = %', lmvFullColumnsList;
+	raise notice 'lmvPkListForCloseDelta = %', lmvPkListForCloseDelta;
 
 	/* Создаем таблицу со свежей выгрузкой и расчитанным хешем*/
 	EXECUTE FORMAT('drop table if exists %s'
-			, lmvTableNm || '_incr_hsh');
+			, split_part(upper(fpInputTableNm), '.', 2) || '_incr_hsh');
 	EXECUTE FORMAT('create temporary table if not exists %s as
 					SELECT *
 					,decode(md5(concat_ws($t1$_$t1$, %s)), $t2$hex$t2$) as pk_hash
 				    ,decode(md5(concat_ws($t1$_$t1$, %s)), $t2$hex$t2$) as dim_hash
-					,%L::timestamp without time zone as valid_from_dttm
-					,%L::timestamp without time zone as valid_to_dttm
-				    ,%L::timestamp without time zone as processed_dttm
 					FROM %s'
-			, split_part(upper(fpInputTableNm), '.', 1) || '_incr_hsh'
+			, split_part(upper(fpInputTableNm), '.', 2) || '_incr_hsh'
 			, replace(replace(lmvPkList, '{', ''),'}','')
 			, replace(replace(lmvColumnsList, '{', ''),'}','')
-			, lmvCurrentTimestamp
-			, lmvFutureTimestamp
-			, lmvCurrentTimestamp
-			, lvInputTableNm);
+			, fpInputTableNm);
 
 	EXECUTE FORMAT('SELECT count(*) as cnt
 					FROM %s'
-			, lmvTableNm || '_incr_hsh')
+			, split_part(upper(fpInputTableNm), '.', 2) || '_incr_hsh')
 			INTO lmvCountRowsSrc;
 		IF lmvCountRowsSrc = 0 THEN
 			RAISE NOTICE 'Входная таблица пустая.';
 		END IF;
-
+	RAISE NOTICE 'Входная таблица CNT = %', lmvCountRowsSrc;
 	/* Забираем актуальный срез из главной таблицы и расчитываем хеши (по фактам и по ключам)*/
 	/* Обработка переменных для расчета хеша */
 	EXECUTE FORMAT('drop table if exists %s'
-			, lmvTableNm||'_snap_hsh');
+			, split_part(upper(fpTargetTableNm), '.', 2) ||'_snap_hsh');
 		EXECUTE FORMAT('create temp table if not exists %s as
 							SELECT decode(md5(concat_ws($t1$_$t1$, %s)), $t2$hex$t2$) as pk_hash
 								,decode(md5(concat_ws($t1$_$t1$, %s)), $t2$hex$t2$) as dim_hash
+					   			, %s
 					   			,valid_from_dttm as valid_from_dttm_snap
 								,valid_to_dttm as valid_to_dttm_snap
 								,processed_dttm as processed_dttm_snap
+					   			, %s
 							FROM %s
-							WHERE valid_to_dttm>=current_timestamp'
-				, split_part(upper(fpInputTableNm), '.', 1) || '_snap_hsh'
+							WHERE valid_to_dttm>current_timestamp'
+				, split_part(upper(fpTargetTableNm), '.', 2) || '_snap_hsh'
+				, replace(replace(lmvPkList, '{', ''),'}','')
 				, replace(replace(lmvPkList, '{', ''),'}','')
 				, replace(replace(lmvColumnsList, '{', ''),'}','')
+				, replace(replace(lmvPkList, '{', ''),'}','')
 				, fpTargetTableNm);
 
 	/* Вычисляем различия в таблицах через FULL JOIN по хеш значению PK */
@@ -141,55 +157,136 @@ BEGIN
 							WHEN incr.pk_hash is null then ''C''
 							WHEN act.pk_hash is null then ''1''
 						END in (''1'',''N'',''C'')'
-			,fpInputTableNm || '_incr_hsh'
-			,fpInputTableNm||'_snap_hsh');
+			,split_part(upper(fpInputTableNm), '.', 2)  || '_incr_hsh'
+			,split_part(upper(fpTargetTableNm), '.', 2) ||'_snap_hsh');
+
+		DROP TABLE IF EXISTS etl_ia.privet;
+		create table etl_ia.privet as select * from calc_diffs_fj;
 
 		SELECT count(*) as cnt INTO lmvCountRows
 					FROM calc_diffs_fj;
 		RAISE NOTICE 'Кол-во строк с расхождениями для таблицы = %',lmvCountRows;
 		SELECT count(*) as cnt INTO lmvCountRowsUpd
 					FROM calc_diffs_fj
-					WHERE diff_flg = 2;
-		RAISE NOTICE 'Кол-во строк с обновлениями данных для таблицы = %',lmvCountRowsUpd;
+					WHERE etl_delta_cd = 'N';
+		RAISE NOTICE 'Кол-во новых строк для таблицы = %',lmvCountRowsUpd;
 		SELECT count(*) as cnt INTO lmvCountRowsTrg
 					FROM calc_diffs_fj
-					WHERE diff_flg = 1;
+					WHERE etl_delta_cd = '1';
 		RAISE NOTICE 'Кол-во новых строк для таблицы = %',lmvCountRowsTrg;
 
 		IF lmvCountRows > 0 THEN
-			DROP TABLE IF EXISTS delta;
-			EXECUTE FORMAT('CREATE TEMP TABLE IF NOT EXISTS delta AS
-						   -- строки на инсерт
-								(SELECT %s
-						   				,ETL_DELTA_CD
-								FROM %s incr
+			EXECUTE FORMAT ('DROP TABLE IF EXISTS %s'
+							,'etl_dds.' || split_part(upper(fpInputTableNm), '.', 2) || '_delta');
+			-- строки на инсерт
+			 -- все отсутствующие в инкременте записи, но присутствующие в снапе -
+							-- к закрытию но только для кусочного
+						   --TODO объявить все атрибуты как НАЛЛ
+						   -- для всех изменений - закрываем предыдущую версию (джоин на снап таблицу)
+						   --TODO объявить все атрибуты как НАЛЛ
+						   -- переписать на инсерт а до этого транкейт
+			raise notice 'создаем структуры дельта-таблицы';
+			--создаем структуры дельта-таблицы
+			EXECUTE FORMAT('create table  %s as
+						   	select %s
+						   		,''N'' as ETL_DELTA_CD
+						   		, cast(current_timestamp as timestamp without time zone) as processed_dttm
+						    from %s
+						   	where 1=0'
+						   , 'etl_dds.' || split_part(upper(fpInputTableNm), '.', 2) || '_delta'
+						   , replace(replace(lmvFullColumnsList, '{', ''),'}','')
+						   , fpTargetTableNm
+						   );
+			raise notice 'строки на инсерт';
+			-- строки на инсерт
+			EXECUTE FORMAT('insert into %s (%s
+						  					,etl_delta_cd
+						  					, processed_dttm)
+						   select %s
+						   		, ''N'' as etl_delta_cd
+						   		, %L as processed_dttm
+						   from %s incr
 								INNER JOIN calc_diffs_fj diffs
 									ON incr.pk_hash = diffs.pk_hash
-									and diff_flg in (''1'',''N''))
-								UNION
-						   -- все отсутствующие в инкременте записи, но присутствующие в снапе - к закрытию
-								(SELECT %s
-						   				,ETL_DELTA_CD
-								FROM %s snap
+									and etl_delta_cd in (''1'',''N'') '
+						   , 'etl_dds.' || split_part(upper(fpInputTableNm), '.', 2) || '_delta'
+						   , replace(replace(lmvFullColumnsList, '{', ''),'}','')
+						   , replace(replace(lmvFullColumnsList, '{', ''),'}','')
+						   , lmvCurrentTimestamp
+						   , split_part(upper(fpInputTableNm), '.', 2)  || '_incr_hsh'
+						   );
+			raise notice 'все отсутствующие в инкременте записи, но присутствующие в снапе';
+			-- все отсутствующие в инкременте записи, но присутствующие в снапе -
+			-- к закрытию но только НЕ для кусочного
+			--TODO объявить все атрибуты как НАЛЛ
+			EXECUTE FORMAT('insert into %s (%s
+						  					,etl_delta_cd
+						  					, processed_dttm)
+						   select %s
+						   		, etl_delta_cd
+						   		, %L as processed_dttm
+						   FROM %s snap
 								INNER JOIN calc_diffs_fj diffs
 									ON snap.pk_hash = diffs.pk_hash
-									and diff_flg in (''C''))
-						   -- для всех изменений - закрываем предыдущую версию (джоин на снап таблицу)
-						  		(SELECT %s
-						   				,''C'' as ETL_DELTA_CD
-								FROM %s snap
+									and etl_delta_cd in (''C'')
+						  		where %L = ''FULL'' '
+						   , 'etl_dds.' || split_part(upper(fpInputTableNm), '.', 2) || '_delta'
+						   , replace(replace(lmvPkListForCloseDelta, '{', ''),'}','')
+						   , replace(replace(replace(replace(lmvPkListForCloseDelta, '{', ''),'}','')
+									 , 'valid_to_dttm', 'valid_to_dttm_snap as valid_to_dttm')
+									 , 'valid_from_dttm', 'valid_from_dttm_snap as valid_from_dttm')
+						   , lmvCurrentTimestamp
+						   , split_part(upper(fpTargetTableNm), '.', 2)  || '_snap_hsh'
+						   , upper(fpPartialUpdateFlg)
+						   );
+			raise notice 'для всех изменений - закрываем предыдущую версию';
+			-- для всех изменений - закрываем предыдущую версию (джоин на снап таблицу)
+		    --TODO объявить все атрибуты как НАЛЛ
+			EXECUTE FORMAT('insert into %s (%s
+						  					, etl_delta_cd
+						  					, processed_dttm)
+						   SELECT %s
+						   			, ''C'' as etl_delta_cd
+						   			, %L as processed_dttm
+									FROM %s snap
 								INNER JOIN calc_diffs_fj diffs
 									ON snap.pk_hash = diffs.pk_hash
-									and diff_flg in (''N''))'
-						   ,REPLACE(REPLACE(REPLACE(lmvFullColumnsList, '{', ''),'}',''),'"','')
-						   ,lmvTableNm || '_incr_hsh'
-						   ,REPLACE(REPLACE(REPLACE(lmvFullColumnsList, '{', ''),'}',''),'"','')
-						   ,lmvTableNm || '_snap_hsh');
+									and etl_delta_cd in (''N'') '
+						   , 'etl_dds.' || split_part(upper(fpInputTableNm), '.', 2) || '_delta'
+						   , replace(replace(lmvPkListForCloseDelta, '{', ''),'}','')
+						   , replace(replace(replace(replace(lmvPkListForCloseDelta, '{', ''),'}','')
+									 , 'valid_to_dttm', 'valid_to_dttm_snap as valid_to_dttm')
+									 , 'valid_from_dttm', 'valid_from_dttm_snap as valid_from_dttm')
+						   , lmvCurrentTimestamp
+						   , split_part(upper(fpTargetTableNm), '.', 2)  || '_snap_hsh'
+						   );
 		ELSE
-			RAISE NOTICE 'No diffs were founded. Next download of data is not required.';
+			RAISE NOTICE 'No diffs were founded. Next steps are not required.';
 		END IF;
 
 END;
 $BODY$;
 
-CALL etl_ia.load_inc('etl_ia.product_chain');
+CALL etl_ia.load_inc('etl_ia.test_rk_table', 'dwh_dds.test_target_table', 'full11');
+
+
+select * from etl_ia.privet;
+
+select *
+from etl_ia.test_rk_table
+
+select *
+from dwh_dds.test_target_table
+
+-- INSERT INTO dwh_dds.test_target_table(
+-- 	var_rk, attr_1, attr_var_1, attr_var_2, attr_var_3, attr_2, attr_3, attr_4, valid_from_dttm, valid_to_dttm, processed_dttm)
+-- 	VALUES (1222, 555, 'test1212', 'test121212', '1121', current_timestamp
+-- 			, 1211212, current_timestamp, current_timestamp, current_timestamp, current_timestamp);
+
+select *
+from etl_dds.test_rk_table_delta
+
+
+
+
+
